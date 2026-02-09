@@ -395,6 +395,17 @@ section h2 {
   margin-top: 2.5rem;
 }
 
+.privacy-note {
+  margin-top: 2rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(21, 28, 36, 0.6);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
 .analysis-section h2 {
   margin-bottom: 0.5rem;
 }
