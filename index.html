@@ -83,6 +83,14 @@
           <h3>Performance & projections</h3>
           <p class="charts-hint">Charts use up to 10 years of history. Scenarios use each ticker’s <strong>annual returns</strong> (90th / median / 10th percentile).</p>
           <button type="button" id="loadChartsBtn" class="btn btn-charts">Load past year & scenarios</button>
+          <div class="charts-loading hidden" id="chartsLoading">
+            <div class="loading-row">
+              <span class="loading-spinner"></span>
+              <span class="loading-text">Loading data</span>
+              <span class="loading-dots"><span></span><span></span><span></span></span>
+            </div>
+            <div class="loading-items" id="chartsLoadingItems"></div>
+          </div>
           <div class="charts-wrap" id="chartsWrap">
             <div class="chart-container">
               <h4 class="chart-title">Past 1 year</h4>
@@ -103,6 +111,12 @@
           <h3>Future scenarios</h3>
           <p class="trajectory-hint">Based on each ticker’s historical annual returns: top 10% (optimistic), median (average), bottom 10% (pessimistic).</p>
           <div class="trajectory-cards trajectory-scenarios" id="trajectoryCards"></div>
+        </div>
+        <div class="analysis-block risk-block">
+          <h3>Risk analytics</h3>
+          <p class="distribution-hint">Beta is computed versus SPY using monthly returns. Risk contributions show which tickers drive portfolio variance.</p>
+          <div class="risk-metrics" id="riskMetrics"></div>
+          <div class="risk-rows" id="riskRows"></div>
         </div>
       </div>
     </section>

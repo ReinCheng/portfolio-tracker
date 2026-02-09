@@ -30,6 +30,38 @@ function formatPercent(value) {
   return `${sign}${value.toFixed(2)}%`;
 }
 
+function formatNumber(value, digits = 2) {
+  if (!Number.isFinite(value)) return '—';
+  return value.toFixed(digits);
+}
+
+function getCacheKey(symbol, range) {
+  return `pt_cache_${symbol}_${range}`;
+}
+
+function getCachedSeries(symbol, range) {
+  try {
+    const raw = localStorage.getItem(getCacheKey(symbol, range));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.series)) return null;
+    return parsed.series;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedSeries(symbol, range, series) {
+  try {
+    localStorage.setItem(getCacheKey(symbol, range), JSON.stringify({
+      savedAt: Date.now(),
+      series,
+    }));
+  } catch {
+    // ignore cache failures
+  }
+}
+
 function computeMonthlyReturns(series) {
   if (!series.length) return [];
   const sorted = [...series].sort((a, b) => a.date - b.date);
@@ -49,6 +81,64 @@ function computeMonthlyReturns(series) {
     }
   }
   return result;
+}
+
+function computeMonthlyReturnMap(series) {
+  if (!series.length) return new Map();
+  const sorted = [...series].sort((a, b) => a.date - b.date);
+  const endOfMonth = new Map();
+  sorted.forEach((p) => {
+    const d = new Date(p.date);
+    const key = d.getFullYear() * 12 + d.getMonth();
+    endOfMonth.set(key, p.close);
+  });
+  const months = [...endOfMonth.keys()].sort((a, b) => a - b);
+  const result = new Map();
+  for (let i = 1; i < months.length; i++) {
+    const prev = endOfMonth.get(months[i - 1]);
+    const curr = endOfMonth.get(months[i]);
+    if (prev != null && curr != null && prev > 0) {
+      result.set(months[i], (curr - prev) / prev);
+    }
+  }
+  return result;
+}
+
+function variance(values) {
+  if (!values.length) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const sumSq = values.reduce((acc, v) => acc + (v - mean) ** 2, 0);
+  return sumSq / values.length;
+}
+
+function covariance(a, b) {
+  if (!a.length || a.length !== b.length) return 0;
+  const meanA = a.reduce((x, y) => x + y, 0) / a.length;
+  const meanB = b.reduce((x, y) => x + y, 0) / b.length;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += (a[i] - meanA) * (b[i] - meanB);
+  return sum / a.length;
+}
+
+function alignReturnsByMonth(returnMapBySymbol) {
+  const months = [];
+  const symbols = Array.from(returnMapBySymbol.keys());
+  if (!symbols.length) return { months, seriesBySymbol: new Map() };
+  const baseMonths = new Set(returnMapBySymbol.get(symbols[0])?.keys() || []);
+  symbols.slice(1).forEach((symbol) => {
+    const keys = returnMapBySymbol.get(symbol)?.keys() || [];
+    const next = new Set(keys);
+    for (const m of baseMonths) {
+      if (!next.has(m)) baseMonths.delete(m);
+    }
+  });
+  months.push(...Array.from(baseMonths).sort((a, b) => a - b));
+  const seriesBySymbol = new Map();
+  symbols.forEach((symbol) => {
+    const map = returnMapBySymbol.get(symbol);
+    seriesBySymbol.set(symbol, months.map((m) => map.get(m)).filter((v) => Number.isFinite(v)));
+  });
+  return { months, seriesBySymbol };
 }
 
 function buildHistogram(values, bins = 12) {
@@ -230,23 +320,35 @@ function renderAnalysis() {
   const chartData = window.__chartData;
   if (tickerDistsEl) {
     if (chartData?.monthlyReturnsBySymbol && chartData.monthlyReturnsBySymbol.size > 0) {
-      tickerDistsEl.innerHTML = holdings.map((h) => {
-        const data = chartData.monthlyReturnsBySymbol.get(h.symbol) || [];
-        if (!data.length) return '';
+      const distributionSymbols = Array.from(new Set(holdings.map((h) => h.symbol)));
+      tickerDistsEl.innerHTML = distributionSymbols.map((symbol, idx) => {
+        const data = chartData.monthlyReturnsBySymbol.get(symbol) || [];
+        if (!data.length) {
+          return `
+            <div class="ticker-distribution-card">
+              <div class="ticker-distribution-header">
+                <span class="ticker-distribution-symbol">${symbol}</span>
+                <span class="ticker-distribution-stats">No data</span>
+              </div>
+              <p class="distribution-placeholder">Yahoo Finance did not return enough data for this ticker.</p>
+            </div>
+          `;
+        }
+        const chartId = `dist-${idx}`;
         return `
           <div class="ticker-distribution-card">
             <div class="ticker-distribution-header">
-              <span class="ticker-distribution-symbol">${h.symbol}</span>
+              <span class="ticker-distribution-symbol">${symbol}</span>
               <span class="ticker-distribution-stats">${data.length} months</span>
             </div>
-            <div class="distribution-plot" id="dist-${h.symbol}"></div>
+            <div class="distribution-plot" id="${chartId}"></div>
           </div>
         `;
       }).join('');
 
       if (typeof Plotly !== 'undefined') {
-        holdings.forEach((h) => {
-          const returns = chartData.monthlyReturnsBySymbol.get(h.symbol) || [];
+        distributionSymbols.forEach((symbol, idx) => {
+          const returns = chartData.monthlyReturnsBySymbol.get(symbol) || [];
           if (!returns.length) return;
           const sorted = [...returns].sort((a, b) => a - b);
           const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
@@ -258,7 +360,10 @@ function renderAnalysis() {
             x: returns.map((r) => r * 100),
             type: 'histogram',
             nbinsx: 20,
-            marker: { color: 'rgba(232, 236, 241, 0.65)' },
+            marker: {
+              color: 'rgba(232, 236, 241, 0.7)',
+              line: { color: 'rgba(42, 51, 64, 0.9)', width: 1 },
+            },
             hovertemplate: '%{x:.2f}%<br>count: %{y}<extra></extra>',
           };
 
@@ -292,16 +397,41 @@ function renderAnalysis() {
             xanchor: idx % 2 === 0 ? 'left' : 'right',
           }));
 
-          Plotly.newPlot(`dist-${h.symbol}`, [trace], {
+          Plotly.newPlot(`dist-${idx}`, [trace], {
             paper_bgcolor: 'rgba(0,0,0,0)',
             plot_bgcolor: 'rgba(0,0,0,0)',
             margin: { l: 40, r: 20, t: 28, b: 36 },
-            xaxis: { title: 'Monthly return (%)', tickfont: { color: '#8896a6' }, gridcolor: 'rgba(42, 51, 64, 0.6)' },
-            yaxis: { title: 'Count', tickfont: { color: '#8896a6' }, gridcolor: 'rgba(42, 51, 64, 0.6)' },
+            xaxis: {
+              title: 'Monthly return',
+              tickfont: { color: '#c2cbd6' },
+              gridcolor: 'rgba(42, 51, 64, 0.5)',
+              zerolinecolor: 'rgba(42, 51, 64, 0.8)',
+              showline: true,
+              linecolor: 'rgba(42, 51, 64, 0.9)',
+              tickformat: '.1f',
+              ticksuffix: '%',
+              ticks: 'outside',
+              ticklen: 6,
+              tickcolor: 'rgba(42, 51, 64, 0.9)',
+            },
+            yaxis: {
+              title: 'Count',
+              tickfont: { color: '#c2cbd6' },
+              gridcolor: 'rgba(42, 51, 64, 0.5)',
+              zerolinecolor: 'rgba(42, 51, 64, 0.8)',
+              showline: true,
+              linecolor: 'rgba(42, 51, 64, 0.9)',
+              ticks: 'outside',
+              ticklen: 6,
+              tickcolor: 'rgba(42, 51, 64, 0.9)',
+            },
+            hovermode: 'x',
             shapes,
             annotations,
           }, { displayModeBar: false, responsive: true });
         });
+      } else {
+        tickerDistsEl.insertAdjacentHTML('beforeend', '<p class="distribution-placeholder">Plotly failed to load. Please refresh to view charts.</p>');
       }
     } else {
       tickerDistsEl.innerHTML = '<p class="distribution-placeholder">Load &quot;Past year &amp; scenarios&quot; above to see each ticker’s monthly return distribution.</p>';
@@ -367,6 +497,46 @@ function renderAnalysis() {
       </div>
     `;
   }
+
+  // Risk analytics (beta, variance, risk contributions)
+  const riskEl = document.getElementById('riskMetrics');
+  const riskRows = document.getElementById('riskRows');
+  if (riskEl && riskRows) {
+    const analytics = chartData?.riskAnalytics;
+    if (analytics?.ready) {
+      riskEl.innerHTML = `
+        <div class="risk-metric">
+          <span class="risk-label">Portfolio beta (vs SPY)</span>
+          <span class="risk-value">${analytics.beta == null ? '—' : formatNumber(analytics.beta, 2)}</span>
+        </div>
+        <div class="risk-metric">
+          <span class="risk-label">Monthly volatility</span>
+          <span class="risk-value">${formatPercent(analytics.volatility * 100)}</span>
+        </div>
+        <div class="risk-metric">
+          <span class="risk-label">Monthly variance</span>
+          <span class="risk-value">${formatNumber(analytics.variance, 6)}</span>
+        </div>
+      `;
+      riskRows.innerHTML = `
+        <div class="risk-row risk-row-header">
+          <span>Ticker</span>
+          <span>Weight</span>
+          <span>Risk share</span>
+        </div>
+        ${analytics.riskContributions.map((row) => `
+        <div class="risk-row">
+          <span class="risk-symbol">${row.symbol}</span>
+          <span>${formatPercent(row.weight * 100)}</span>
+          <span>${formatPercent(row.contribution * 100)}</span>
+        </div>
+      `).join('')}
+      `;
+    } else {
+      riskEl.innerHTML = '<p class="distribution-placeholder">Load charts to compute risk analytics.</p>';
+      riskRows.innerHTML = '';
+    }
+  }
 }
 
 function render() {
@@ -394,22 +564,29 @@ async function fetchPreviousClose(symbol) {
 async function fetchHistorical(symbol, range = '1y') {
   const params = new URLSearchParams({ range, interval: '1d' });
   const url = CORS_PROXY + encodeURIComponent(YAHOO_CHART + symbol.toUpperCase().trim() + '?' + params);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Fetch failed');
-  const data = await res.json();
-  const result = data?.chart?.result?.[0];
-  if (!result) throw new Error('Invalid symbol');
-  const timestamps = result.timestamp || [];
-  const quotes = result.indicators?.quote?.[0];
-  const closes = (quotes && quotes.close) || [];
-  const series = [];
-  for (let i = 0; i < timestamps.length; i++) {
-    const close = closes[i];
-    if (close != null && close > 0 && Number.isFinite(close)) {
-      series.push({ date: timestamps[i] * 1000, close });
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Fetch failed');
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) throw new Error('Invalid symbol');
+    const timestamps = result.timestamp || [];
+    const quotes = result.indicators?.quote?.[0];
+    const closes = (quotes && quotes.close) || [];
+    const series = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const close = closes[i];
+      if (close != null && close > 0 && Number.isFinite(close)) {
+        series.push({ date: timestamps[i] * 1000, close });
+      }
     }
+    if (series.length) setCachedSeries(symbol, range, series);
+    return series;
+  } catch (err) {
+    const cached = getCachedSeries(symbol, range);
+    if (cached?.length) return cached;
+    throw err;
   }
-  return series;
 }
 
 /** End-of-year close per year, then annual return = (close_Y - close_Y-1) / close_Y-1 */
@@ -591,6 +768,7 @@ function drawPastChart(canvasId, pastSeries) {
         y: {
           grid: { color: 'rgba(42, 51, 64, 0.6)' },
           stacked: true,
+          beginAtZero: true,
           ticks: {
             color: '#8896a6',
             callback: (v) => '$' + (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : v),
@@ -705,6 +883,31 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
   if (holdings.length === 0) return;
   const btn = document.getElementById('loadChartsBtn');
   const wrap = document.getElementById('chartsWrap');
+  const loadingWrap = document.getElementById('chartsLoading');
+  const loadingItems = document.getElementById('chartsLoadingItems');
+  const symbols = Array.from(new Set(holdings.map((h) => h.symbol)));
+  const riskMarketSymbol = 'SPY';
+  const loadingSymbols = [...symbols, riskMarketSymbol];
+  const statusBySymbol = new Map(symbols.map((symbol) => [symbol, { oneYear: 'queued', long: 'queued' }]));
+  statusBySymbol.set(riskMarketSymbol, { oneYear: '—', long: 'queued' });
+
+  const renderLoading = () => {
+    if (!loadingItems) return;
+    loadingItems.innerHTML = loadingSymbols.map((symbol) => {
+      const status = statusBySymbol.get(symbol);
+      return `
+        <div class="loading-item">
+          <span class="loading-symbol">${symbol}</span>
+          <span class="loading-meta">1y: ${status.oneYear} · 10y: ${status.long}</span>
+        </div>
+      `;
+    }).join('');
+  };
+
+  if (loadingWrap) {
+    loadingWrap.classList.remove('hidden');
+    renderLoading();
+  }
   btn.disabled = true;
   btn.textContent = 'Loading…';
 
@@ -712,15 +915,24 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
   const percentilesBySymbol = new Map();
   const annualReturnsBySymbol = new Map();
   const monthlyReturnsBySymbol = new Map();
+  const monthlyReturnMapsBySymbol = new Map();
 
   // 1) Fetch 1y daily for each symbol (reliable, fast) – used for past chart
-  for (const h of holdings) {
+  for (const symbol of symbols) {
     try {
-      const series = await fetchHistorical(h.symbol, '1y');
-      if (series.length) series1yBySymbol.set(h.symbol, series);
+      statusBySymbol.get(symbol).oneYear = 'loading';
+      renderLoading();
+      const series = await fetchHistorical(symbol, '1y');
+      if (series.length) {
+        series1yBySymbol.set(symbol, series);
+        statusBySymbol.get(symbol).oneYear = 'done';
+      } else {
+        statusBySymbol.get(symbol).oneYear = 'no data';
+      }
     } catch {
-      // skip
+      statusBySymbol.get(symbol).oneYear = 'failed';
     }
+    renderLoading();
   }
 
   const pastSeries = buildPastSeries(series1yBySymbol, holdings);
@@ -736,11 +948,13 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
   }
 
   // 2) Fetch 10y for annual returns (scenarios). Fallback to 5y then 2y if 10y fails
-  for (const h of holdings) {
+  for (const symbol of symbols) {
     let seriesLong = null;
     for (const range of ['10y', '5y', '2y']) {
       try {
-        seriesLong = await fetchHistorical(h.symbol, range);
+        statusBySymbol.get(symbol).long = `loading ${range}`;
+        renderLoading();
+        seriesLong = await fetchHistorical(symbol, range);
         if (seriesLong.length >= 60) break; // need enough points for multiple years
       } catch {
         continue;
@@ -749,18 +963,103 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
     if (seriesLong && seriesLong.length) {
       const monthlyReturns = computeMonthlyReturns(seriesLong);
       if (monthlyReturns.length) {
-        monthlyReturnsBySymbol.set(h.symbol, monthlyReturns);
+        monthlyReturnsBySymbol.set(symbol, monthlyReturns);
       }
+      const monthlyMap = computeMonthlyReturnMap(seriesLong);
+      if (monthlyMap.size) monthlyReturnMapsBySymbol.set(symbol, monthlyMap);
       const annualReturns = computeAnnualReturns(seriesLong);
       if (annualReturns.length) {
-        annualReturnsBySymbol.set(h.symbol, annualReturns);
+        annualReturnsBySymbol.set(symbol, annualReturns);
         const { p10, p50, p90 } = computeAnnualReturnPercentiles(annualReturns);
-        percentilesBySymbol.set(h.symbol, { p10, p50, p90 });
+        percentilesBySymbol.set(symbol, { p10, p50, p90 });
       }
+      statusBySymbol.get(symbol).long = 'done';
+    } else {
+      statusBySymbol.get(symbol).long = 'no data';
+    }
+    renderLoading();
+  }
+
+  // Market data for beta (SPY)
+  let marketMonthlyMap = new Map();
+  try {
+    statusBySymbol.get(riskMarketSymbol).long = 'loading 10y';
+    renderLoading();
+    const marketSeries = await fetchHistorical(riskMarketSymbol, '10y');
+    marketMonthlyMap = computeMonthlyReturnMap(marketSeries);
+    statusBySymbol.get(riskMarketSymbol).long = marketMonthlyMap.size ? 'done' : 'no data';
+  } catch {
+    statusBySymbol.get(riskMarketSymbol).long = 'failed';
+    marketMonthlyMap = new Map();
+  }
+  renderLoading();
+
+  // Risk analytics
+  let riskAnalytics = { ready: false, beta: null, variance: 0, volatility: 0, riskContributions: [] };
+  if (monthlyReturnMapsBySymbol.size) {
+    const weights = new Map();
+    let portfolioValue = 0;
+    holdings.forEach((h) => { portfolioValue += h.quantity * h.currentPrice; });
+    holdings.forEach((h) => {
+      const w = portfolioValue > 0 ? (h.quantity * h.currentPrice) / portfolioValue : 0;
+      weights.set(h.symbol, w);
+    });
+
+    const { months } = alignReturnsByMonth(monthlyReturnMapsBySymbol);
+    if (months.length) {
+      const portfolioReturns = months.map((m) => {
+        let sum = 0;
+        monthlyReturnMapsBySymbol.forEach((map, symbol) => {
+          const r = map.get(m);
+          const w = weights.get(symbol) || 0;
+          if (Number.isFinite(r)) sum += w * r;
+        });
+        return sum;
+      });
+
+      const portVar = variance(portfolioReturns);
+      const portVol = Math.sqrt(portVar);
+
+      const riskContributions = [];
+      monthlyReturnMapsBySymbol.forEach((map, symbol) => {
+        const series = months.map((m) => map.get(m)).filter((v) => Number.isFinite(v));
+        if (!series.length) return;
+        const cov = covariance(series, portfolioReturns);
+        const weight = weights.get(symbol) || 0;
+        const contribution = portVar > 0 ? (weight * cov) / portVar : 0;
+        riskContributions.push({ symbol, weight, contribution });
+      });
+
+      riskContributions.sort((a, b) => b.contribution - a.contribution);
+
+      let beta = null;
+      if (marketMonthlyMap.size) {
+        const mapsWithMarket = new Map(monthlyReturnMapsBySymbol);
+        mapsWithMarket.set(riskMarketSymbol, marketMonthlyMap);
+        const aligned = alignReturnsByMonth(mapsWithMarket);
+        const marketSeries = aligned.seriesBySymbol.get(riskMarketSymbol) || [];
+        if (aligned.months.length && marketSeries.length === aligned.months.length) {
+          const marketVar = variance(marketSeries);
+          beta = marketVar > 0 ? covariance(
+            aligned.months.map((m) => {
+              let sum = 0;
+              monthlyReturnMapsBySymbol.forEach((map, symbol) => {
+                const r = map.get(m);
+                const w = weights.get(symbol) || 0;
+                if (Number.isFinite(r)) sum += w * r;
+              });
+              return sum;
+            }),
+            marketSeries,
+          ) / marketVar : 0;
+        }
+      }
+
+      riskAnalytics = { ready: true, beta, variance: portVar, volatility: portVol, riskContributions };
     }
   }
 
-  window.__chartData = { pastSeries, percentilesBySymbol, annualReturnsBySymbol, monthlyReturnsBySymbol };
+  window.__chartData = { pastSeries, percentilesBySymbol, annualReturnsBySymbol, monthlyReturnsBySymbol, riskAnalytics };
 
   if (percentilesBySymbol.size) {
     requestAnimationFrame(() => {
@@ -770,6 +1069,7 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
 
   btn.textContent = 'Refresh charts';
   btn.disabled = false;
+  if (loadingWrap) loadingWrap.classList.add('hidden');
   render();
 });
 
