@@ -6,7 +6,7 @@
   <title>Portfolio Tracker</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -70,8 +70,49 @@
         <p class="empty-state" id="emptyState">No holdings yet. Add your first investment above.</p>
       </div>
     </section>
+
+    <section class="analysis-section" id="analysisSection">
+      <h2>Portfolio Analysis</h2>
+      <p class="analysis-intro" id="analysisIntro">Add holdings above, then refresh or add more to see allocation and trajectory.</p>
+      <div class="analysis-content" id="analysisContent">
+        <div class="analysis-block allocation-block">
+          <h3>Allocation</h3>
+          <div class="allocation-list" id="allocationList"></div>
+        </div>
+        <div class="analysis-block performance-block">
+          <h3>Top & bottom performers</h3>
+          <div class="performance-list" id="performanceList"></div>
+        </div>
+        <div class="analysis-block charts-block">
+          <h3>Performance & projections</h3>
+          <p class="charts-hint">Charts use up to 10 years of history. Scenarios use each ticker’s <strong>annual returns</strong> (90th / median / 10th percentile).</p>
+          <button type="button" id="loadChartsBtn" class="btn btn-charts">Load past year & scenarios</button>
+          <div class="charts-wrap" id="chartsWrap">
+            <div class="chart-container">
+              <h4 class="chart-title">Past 1 year</h4>
+              <div class="chart-inner"><canvas id="chartPast"></canvas></div>
+            </div>
+            <div class="chart-container">
+              <h4 class="chart-title">Projected value (6 mo & 1 yr)</h4>
+              <div class="chart-inner"><canvas id="chartFuture"></canvas></div>
+            </div>
+          </div>
+        </div>
+        <div class="analysis-block distribution-block">
+          <h3>Past annual return by ticker</h3>
+          <p class="distribution-hint">Each ticker’s year-over-year return. Scenarios use the distribution: 90th % (optimistic), median (average), 10th % (pessimistic).</p>
+          <div class="ticker-distributions" id="tickerDistributions"></div>
+        </div>
+        <div class="analysis-block trajectory-block">
+          <h3>Future scenarios</h3>
+          <p class="trajectory-hint">Based on each ticker’s historical annual returns: top 10% (optimistic), median (average), bottom 10% (pessimistic).</p>
+          <div class="trajectory-cards trajectory-scenarios" id="trajectoryCards"></div>
+        </div>
+      </div>
+    </section>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
