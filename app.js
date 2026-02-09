@@ -30,6 +30,52 @@ function formatPercent(value) {
   return `${sign}${value.toFixed(2)}%`;
 }
 
+function computeMonthlyReturns(series) {
+  if (!series.length) return [];
+  const sorted = [...series].sort((a, b) => a.date - b.date);
+  const endOfMonth = new Map();
+  sorted.forEach((p) => {
+    const d = new Date(p.date);
+    const key = d.getFullYear() * 12 + d.getMonth();
+    endOfMonth.set(key, p.close);
+  });
+  const months = [...endOfMonth.keys()].sort((a, b) => a - b);
+  const result = [];
+  for (let i = 1; i < months.length; i++) {
+    const prev = endOfMonth.get(months[i - 1]);
+    const curr = endOfMonth.get(months[i]);
+    if (prev != null && curr != null && prev > 0) {
+      result.push((curr - prev) / prev);
+    }
+  }
+  return result;
+}
+
+function buildHistogram(values, bins = 12) {
+  if (!values.length) {
+    return { bins: [], counts: [], min: 0, max: 0, maxCount: 0 };
+  }
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const pad = Math.max(0.02, (maxVal - minVal) * 0.1);
+  const min = minVal - pad;
+  const max = maxVal + pad;
+  const step = (max - min) / bins;
+  const counts = new Array(bins).fill(0);
+  values.forEach((v) => {
+    const clamped = Math.min(max, Math.max(min, v));
+    const idx = Math.min(bins - 1, Math.floor((clamped - min) / step));
+    counts[idx] += 1;
+  });
+  const maxCount = Math.max(...counts);
+  const binRanges = counts.map((_, i) => {
+    const from = min + i * step;
+    const to = from + step;
+    return { from, to };
+  });
+  return { bins: binRanges, counts, min, max, maxCount };
+}
+
 function addHolding(symbol, quantity, purchasePrice, currentPrice) {
   const holding = {
     id: crypto.randomUUID?.() ?? Date.now().toString(),
@@ -179,50 +225,86 @@ function renderAnalysis() {
     })
     .join('');
 
-  // Top & bottom performers (by P&L %)
-  const sorted = [...holdingStats].sort((a, b) => b.pnlPercent - a.pnlPercent);
-  const top = sorted.slice(0, 3);
-  const topIds = new Set(top.map((h) => h.id));
-  const bottom = sorted.filter((h) => !topIds.has(h.id)).slice(-3).reverse();
-  const performanceList = document.getElementById('performanceList');
-  performanceList.innerHTML = [
-    ...top.map((h) => `<div class="performance-row"><span class="performance-symbol">${h.symbol}</span><span class="holding-pnl positive">${formatPercent(h.pnlPercent)}</span></div>`),
-    ...bottom.map((h) => `<div class="performance-row"><span class="performance-symbol">${h.symbol}</span><span class="holding-pnl ${h.pnlPercent >= 0 ? 'positive' : 'negative'}">${formatPercent(h.pnlPercent)}</span></div>`),
-  ].join('');
-
-  // Past annual return distribution by ticker (when chart data loaded)
+  // Past monthly return distribution by ticker (when chart data loaded)
   const tickerDistsEl = document.getElementById('tickerDistributions');
   const chartData = window.__chartData;
   if (tickerDistsEl) {
-    if (chartData?.annualReturnsBySymbol && chartData.annualReturnsBySymbol.size > 0) {
-      const percentilesBySymbol = chartData.percentilesBySymbol || new Map();
+    if (chartData?.monthlyReturnsBySymbol && chartData.monthlyReturnsBySymbol.size > 0) {
       tickerDistsEl.innerHTML = holdings.map((h) => {
-        const annualReturns = chartData.annualReturnsBySymbol[h.symbol] || [];
-        const p = percentilesBySymbol.get(h.symbol) || { p10: 0, p50: 0, p90: 0 };
-        const yearBars = annualReturns
-          .map((r) => {
-            const pct = Math.min(100, Math.max(8, Math.abs(r.return) * 2.5));
-            return `<span class="year-bar ${r.return >= 0 ? 'positive' : 'negative'}" style="height: ${pct}%;" title="${r.year}: ${(r.return * 100).toFixed(1)}%"></span>`;
-          })
-          .join('');
-        const yearList = annualReturns
-          .slice()
-          .reverse()
-          .map((r) => `<span class="year-pill ${r.return >= 0 ? 'positive' : 'negative'}">${r.year}: ${(r.return >= 0 ? '+' : '')}${(r.return * 100).toFixed(1)}%</span>`)
-          .join('');
+        const data = chartData.monthlyReturnsBySymbol.get(h.symbol) || [];
+        if (!data.length) return '';
         return `
           <div class="ticker-distribution-card">
             <div class="ticker-distribution-header">
               <span class="ticker-distribution-symbol">${h.symbol}</span>
-              <span class="ticker-distribution-stats">90th: ${(p.p90 * 100).toFixed(1)}% · med: ${(p.p50 * 100).toFixed(1)}% · 10th: ${(p.p10 * 100).toFixed(1)}%</span>
+              <span class="ticker-distribution-stats">${data.length} months</span>
             </div>
-            <div class="ticker-distribution-bars" title="Each bar = one year return">${yearBars}</div>
-            <div class="ticker-distribution-years">${yearList}</div>
+            <div class="distribution-plot" id="dist-${h.symbol}"></div>
           </div>
         `;
       }).join('');
+
+      if (typeof Plotly !== 'undefined') {
+        holdings.forEach((h) => {
+          const returns = chartData.monthlyReturnsBySymbol.get(h.symbol) || [];
+          if (!returns.length) return;
+          const sorted = [...returns].sort((a, b) => a - b);
+          const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+          const median = percentile(sorted, 50);
+          const p25 = percentile(sorted, 25);
+          const p75 = percentile(sorted, 75);
+
+          const trace = {
+            x: returns.map((r) => r * 100),
+            type: 'histogram',
+            nbinsx: 20,
+            marker: { color: 'rgba(232, 236, 241, 0.65)' },
+            hovertemplate: '%{x:.2f}%<br>count: %{y}<extra></extra>',
+          };
+
+          const shapes = [
+            { x: mean * 100, label: 'Mean', color: '#5b9cf4' },
+            { x: median * 100, label: 'Median', color: '#34c77b' },
+            { x: p25 * 100, label: '25%', color: '#f4c542' },
+            { x: p75 * 100, label: '75%', color: '#9b7cf6' },
+          ].map((s) => ({
+            type: 'line',
+            x0: s.x,
+            x1: s.x,
+            y0: 0,
+            y1: 1,
+            yref: 'paper',
+            line: { color: s.color, width: 2, dash: 'dot' },
+          }));
+
+          const annotations = [
+            { x: mean * 100, label: `Mean ${formatPercent(mean)}` , color: '#5b9cf4' },
+            { x: median * 100, label: `Median ${formatPercent(median)}`, color: '#34c77b' },
+            { x: p25 * 100, label: `25% ${formatPercent(p25)}`, color: '#f4c542' },
+            { x: p75 * 100, label: `75% ${formatPercent(p75)}`, color: '#9b7cf6' },
+          ].map((a, idx) => ({
+            x: a.x,
+            y: 1.05,
+            yref: 'paper',
+            text: a.label,
+            showarrow: false,
+            font: { color: a.color, size: 10 },
+            xanchor: idx % 2 === 0 ? 'left' : 'right',
+          }));
+
+          Plotly.newPlot(`dist-${h.symbol}`, [trace], {
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)',
+            margin: { l: 40, r: 20, t: 28, b: 36 },
+            xaxis: { title: 'Monthly return (%)', tickfont: { color: '#8896a6' }, gridcolor: 'rgba(42, 51, 64, 0.6)' },
+            yaxis: { title: 'Count', tickfont: { color: '#8896a6' }, gridcolor: 'rgba(42, 51, 64, 0.6)' },
+            shapes,
+            annotations,
+          }, { displayModeBar: false, responsive: true });
+        });
+      }
     } else {
-      tickerDistsEl.innerHTML = '<p class="distribution-placeholder">Load &quot;Past year &amp; scenarios&quot; above to see each ticker’s annual return distribution.</p>';
+      tickerDistsEl.innerHTML = '<p class="distribution-placeholder">Load &quot;Past year &amp; scenarios&quot; above to see each ticker’s monthly return distribution.</p>';
     }
   }
 
@@ -230,39 +312,57 @@ function renderAnalysis() {
   const trajectoryCards = document.getElementById('trajectoryCards');
 
   if (chartData && chartData.percentilesBySymbol) {
+    const threeMoOpt = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'opt', 0.25);
     const sixMoOpt = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'opt', 0.5);
+    const nineMoOpt = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'opt', 0.75);
     const oneYrOpt = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'opt', 1);
+    const threeMoAvg = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'avg', 0.25);
     const sixMoAvg = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'avg', 0.5);
+    const nineMoAvg = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'avg', 0.75);
     const oneYrAvg = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'avg', 1);
+    const threeMoPess = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'pess', 0.25);
     const sixMoPess = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'pess', 0.5);
+    const nineMoPess = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'pess', 0.75);
     const oneYrPess = projectAt(holdings, totalValue, chartData.percentilesBySymbol, 'pess', 1);
+    const toPct = (value) => (totalValue > 0 ? ((value / totalValue) - 1) * 100 : 0);
 
     trajectoryCards.innerHTML = `
       <div class="scenario-card optimistic">
         <div class="scenario-label">Optimistic (top 10%)</div>
-        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMoOpt)}</span></div>
-        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYrOpt)}</span></div>
+        <div class="scenario-row"><span>3 months</span><span class="scenario-value">${formatCurrency(threeMoOpt)} <span class="scenario-percent">${formatPercent(toPct(threeMoOpt))}</span></span></div>
+        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMoOpt)} <span class="scenario-percent">${formatPercent(toPct(sixMoOpt))}</span></span></div>
+        <div class="scenario-row"><span>9 months</span><span class="scenario-value">${formatCurrency(nineMoOpt)} <span class="scenario-percent">${formatPercent(toPct(nineMoOpt))}</span></span></div>
+        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYrOpt)} <span class="scenario-percent">${formatPercent(toPct(oneYrOpt))}</span></span></div>
       </div>
       <div class="scenario-card average">
         <div class="scenario-label">Average (historical)</div>
-        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMoAvg)}</span></div>
-        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYrAvg)}</span></div>
+        <div class="scenario-row"><span>3 months</span><span class="scenario-value">${formatCurrency(threeMoAvg)} <span class="scenario-percent">${formatPercent(toPct(threeMoAvg))}</span></span></div>
+        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMoAvg)} <span class="scenario-percent">${formatPercent(toPct(sixMoAvg))}</span></span></div>
+        <div class="scenario-row"><span>9 months</span><span class="scenario-value">${formatCurrency(nineMoAvg)} <span class="scenario-percent">${formatPercent(toPct(nineMoAvg))}</span></span></div>
+        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYrAvg)} <span class="scenario-percent">${formatPercent(toPct(oneYrAvg))}</span></span></div>
       </div>
       <div class="scenario-card pessimistic">
         <div class="scenario-label">Pessimistic (bottom 10%)</div>
-        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMoPess)}</span></div>
-        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYrPess)}</span></div>
+        <div class="scenario-row"><span>3 months</span><span class="scenario-value">${formatCurrency(threeMoPess)} <span class="scenario-percent">${formatPercent(toPct(threeMoPess))}</span></span></div>
+        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMoPess)} <span class="scenario-percent">${formatPercent(toPct(sixMoPess))}</span></span></div>
+        <div class="scenario-row"><span>9 months</span><span class="scenario-value">${formatCurrency(nineMoPess)} <span class="scenario-percent">${formatPercent(toPct(nineMoPess))}</span></span></div>
+        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYrPess)} <span class="scenario-percent">${formatPercent(toPct(oneYrPess))}</span></span></div>
       </div>
     `;
   } else {
     const pnlDecimal = totalCost > 0 ? (totalValue - totalCost) / totalCost : 0;
+    const threeMo = totalValue * Math.pow(1 + pnlDecimal, 0.25);
     const sixMo = totalValue * Math.pow(1 + pnlDecimal, 0.5);
+    const nineMo = totalValue * Math.pow(1 + pnlDecimal, 0.75);
     const oneYr = totalValue * Math.pow(1 + pnlDecimal, 1);
+    const toPct = (value) => (totalValue > 0 ? ((value / totalValue) - 1) * 100 : 0);
     trajectoryCards.innerHTML = `
       <div class="trajectory-card" style="grid-column: 1 / -1;">
         <div class="label">Simple projection (current return rate)</div>
-        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMo)}</span></div>
-        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYr)}</span></div>
+        <div class="scenario-row"><span>3 months</span><span class="scenario-value">${formatCurrency(threeMo)} <span class="scenario-percent">${formatPercent(toPct(threeMo))}</span></span></div>
+        <div class="scenario-row"><span>6 months</span><span class="scenario-value">${formatCurrency(sixMo)} <span class="scenario-percent">${formatPercent(toPct(sixMo))}</span></span></div>
+        <div class="scenario-row"><span>9 months</span><span class="scenario-value">${formatCurrency(nineMo)} <span class="scenario-percent">${formatPercent(toPct(nineMo))}</span></span></div>
+        <div class="scenario-row"><span>1 year</span><span class="scenario-value">${formatCurrency(oneYr)} <span class="scenario-percent">${formatPercent(toPct(oneYr))}</span></span></div>
         <p class="charts-hint" style="margin-top: 0.75rem; margin-bottom: 0;">Click &quot;Load past year &amp; scenarios&quot; above for optimistic / average / pessimistic based on each ticker&apos;s history.</p>
       </div>
     `;
@@ -368,6 +468,11 @@ function buildPastSeries(seriesBySymbol, holdings, maxAgeMs = 365 * 24 * 60 * 60
     if (p.date >= cutoff && Number.isFinite(p.date) && p.close != null) dateSet.add(p.date);
   }));
   const dates = Array.from(dateSet).sort((a, b) => a - b);
+  const quantityBySymbol = new Map();
+  holdings.forEach((h) => {
+    const qty = quantityBySymbol.get(h.symbol) || 0;
+    quantityBySymbol.set(h.symbol, qty + h.quantity);
+  });
   const getPrice = (symbol, date) => {
     const series = seriesBySymbol.get(symbol) || [];
     const exact = series.find((p) => p.date === date);
@@ -379,14 +484,19 @@ function buildPastSeries(seriesBySymbol, holdings, maxAgeMs = 365 * 24 * 60 * 60
     if (before && after) return before.close;
     return null;
   };
-  return dates.map((date) => {
-    let value = 0;
-    holdings.forEach((h) => {
-      const price = getPrice(h.symbol, date);
-      if (price != null && Number.isFinite(price)) value += h.quantity * price;
+  const symbols = Array.from(quantityBySymbol.keys());
+  const valuesBySymbol = new Map(symbols.map((symbol) => [symbol, []]));
+  dates.forEach((date) => {
+    symbols.forEach((symbol) => {
+      const price = getPrice(symbol, date);
+      const qty = quantityBySymbol.get(symbol) || 0;
+      const value = price != null && Number.isFinite(price) ? qty * price : 0;
+      valuesBySymbol.get(symbol).push(value);
     });
-    return { date, value };
-  }).filter((p) => p.value > 0);
+  });
+  const filteredSymbols = symbols.filter((symbol) => (valuesBySymbol.get(symbol) || []).some((v) => v > 0));
+  const filteredValuesBySymbol = new Map(filteredSymbols.map((symbol) => [symbol, valuesBySymbol.get(symbol) || []]));
+  return { dates, symbols: filteredSymbols, valuesBySymbol: filteredValuesBySymbol };
 }
 
 
@@ -407,40 +517,71 @@ function drawPastChart(canvasId, pastSeries) {
     chartPastInstance = null;
   }
   const ctx = document.getElementById(canvasId)?.getContext('2d');
-  if (!ctx || !pastSeries.length) return;
+  if (!ctx || !pastSeries?.dates?.length) return;
 
-  const labels = pastSeries.map((p) => {
-    const d = new Date(p.date);
+  const { dates, symbols, valuesBySymbol } = pastSeries;
+  const labels = dates.map((date) => {
+    const d = new Date(date);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
   });
-  const values = pastSeries.map((p) => p.value);
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-  gradient.addColorStop(0, 'rgba(52, 199, 123, 0.35)');
-  gradient.addColorStop(1, 'rgba(52, 199, 123, 0)');
+  const palette = [
+    { border: '#5b9cf4', fill: 'rgba(91, 156, 244, 0.25)' },
+    { border: '#34c77b', fill: 'rgba(52, 199, 123, 0.25)' },
+    { border: '#f4c542', fill: 'rgba(244, 197, 66, 0.25)' },
+    { border: '#9b7cf6', fill: 'rgba(155, 124, 246, 0.25)' },
+    { border: '#e85a5a', fill: 'rgba(232, 90, 90, 0.25)' },
+    { border: '#4fd1c5', fill: 'rgba(79, 209, 197, 0.25)' },
+  ];
+  const datasets = symbols.map((symbol, idx) => {
+    const colors = palette[idx % palette.length];
+    return {
+      label: symbol,
+      data: valuesBySymbol.get(symbol) || [],
+      borderColor: colors.border,
+      backgroundColor: colors.fill,
+      fill: true,
+      tension: 0.35,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      borderWidth: 1.5,
+      stack: 'total',
+    };
+  });
+  const totalValues = dates.map((_, i) => {
+    let sum = 0;
+    symbols.forEach((symbol) => {
+      sum += valuesBySymbol.get(symbol)?.[i] || 0;
+    });
+    return sum;
+  });
+  datasets.push({
+    label: 'Total',
+    data: totalValues,
+    borderColor: '#e8ecf1',
+    backgroundColor: 'rgba(232, 236, 241, 0.08)',
+    fill: false,
+    tension: 0.35,
+    pointRadius: 0,
+    pointHoverRadius: 4,
+    borderWidth: 2.5,
+  });
 
   if (typeof Chart === 'undefined') return;
   chartPastInstance = new Chart(ctx, {
     type: 'line',
     data: {
       labels,
-      datasets: [{
-        label: 'Portfolio value',
-        data: values,
-        borderColor: '#34c77b',
-        backgroundColor: gradient,
-        fill: true,
-        tension: 0.35,
-        pointRadius: 0,
-        pointHoverRadius: 6,
-        borderWidth: 2,
-      }],
+      datasets,
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: {
+          position: 'top',
+          labels: { color: '#e8ecf1', padding: 16 },
+        },
       },
       scales: {
         x: {
@@ -449,6 +590,7 @@ function drawPastChart(canvasId, pastSeries) {
         },
         y: {
           grid: { color: 'rgba(42, 51, 64, 0.6)' },
+          stacked: true,
           ticks: {
             color: '#8896a6',
             callback: (v) => '$' + (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : v),
@@ -468,14 +610,21 @@ function drawFutureChart(canvasId, totalNow, holdings, percentilesBySymbol) {
   if (!ctx) return;
 
   const now = totalNow;
+  const threeMoOpt = projectAt(holdings, totalNow, percentilesBySymbol, 'opt', 0.25);
   const sixMoOpt = projectAt(holdings, totalNow, percentilesBySymbol, 'opt', 0.5);
+  const nineMoOpt = projectAt(holdings, totalNow, percentilesBySymbol, 'opt', 0.75);
   const oneYrOpt = projectAt(holdings, totalNow, percentilesBySymbol, 'opt', 1);
+  const threeMoAvg = projectAt(holdings, totalNow, percentilesBySymbol, 'avg', 0.25);
   const sixMoAvg = projectAt(holdings, totalNow, percentilesBySymbol, 'avg', 0.5);
+  const nineMoAvg = projectAt(holdings, totalNow, percentilesBySymbol, 'avg', 0.75);
   const oneYrAvg = projectAt(holdings, totalNow, percentilesBySymbol, 'avg', 1);
+  const threeMoPess = projectAt(holdings, totalNow, percentilesBySymbol, 'pess', 0.25);
   const sixMoPess = projectAt(holdings, totalNow, percentilesBySymbol, 'pess', 0.5);
+  const nineMoPess = projectAt(holdings, totalNow, percentilesBySymbol, 'pess', 0.75);
   const oneYrPess = projectAt(holdings, totalNow, percentilesBySymbol, 'pess', 1);
 
-  const labels = ['Today', '6 months', '1 year'];
+  const labels = ['Today', '3 months', '6 months', '9 months', '1 year'];
+  const toPct = (value) => (totalNow > 0 ? ((value / totalNow) - 1) * 100 : 0);
 
   if (typeof Chart === 'undefined') return;
   chartFutureInstance = new Chart(ctx, {
@@ -485,7 +634,7 @@ function drawFutureChart(canvasId, totalNow, holdings, percentilesBySymbol) {
       datasets: [
         {
           label: 'Optimistic',
-          data: [now, sixMoOpt, oneYrOpt],
+          data: [now, threeMoOpt, sixMoOpt, nineMoOpt, oneYrOpt],
           borderColor: '#34c77b',
           backgroundColor: 'rgba(52, 199, 123, 0.1)',
           fill: false,
@@ -496,7 +645,7 @@ function drawFutureChart(canvasId, totalNow, holdings, percentilesBySymbol) {
         },
         {
           label: 'Average',
-          data: [now, sixMoAvg, oneYrAvg],
+          data: [now, threeMoAvg, sixMoAvg, nineMoAvg, oneYrAvg],
           borderColor: '#5b9cf4',
           backgroundColor: 'rgba(91, 156, 244, 0.1)',
           fill: false,
@@ -507,7 +656,7 @@ function drawFutureChart(canvasId, totalNow, holdings, percentilesBySymbol) {
         },
         {
           label: 'Pessimistic',
-          data: [now, sixMoPess, oneYrPess],
+          data: [now, threeMoPess, sixMoPess, nineMoPess, oneYrPess],
           borderColor: '#e85a5a',
           backgroundColor: 'rgba(232, 90, 90, 0.1)',
           fill: false,
@@ -525,6 +674,14 @@ function drawFutureChart(canvasId, totalNow, holdings, percentilesBySymbol) {
         legend: {
           position: 'top',
           labels: { color: '#e8ecf1', padding: 16 },
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const value = ctx.parsed.y;
+              return `${ctx.dataset.label}: ${formatCurrency(value)} (${formatPercent(toPct(value))})`;
+            },
+          },
         },
       },
       scales: {
@@ -554,6 +711,7 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
   const series1yBySymbol = new Map();
   const percentilesBySymbol = new Map();
   const annualReturnsBySymbol = new Map();
+  const monthlyReturnsBySymbol = new Map();
 
   // 1) Fetch 1y daily for each symbol (reliable, fast) – used for past chart
   for (const h of holdings) {
@@ -571,7 +729,7 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
 
   // Show chart area and draw past chart (1y data is reliable and fast)
   wrap.classList.add('visible');
-  if (pastSeries.length) {
+  if (pastSeries?.dates?.length) {
     requestAnimationFrame(() => {
       drawPastChart('chartPast', pastSeries);
     });
@@ -589,6 +747,10 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
       }
     }
     if (seriesLong && seriesLong.length) {
+      const monthlyReturns = computeMonthlyReturns(seriesLong);
+      if (monthlyReturns.length) {
+        monthlyReturnsBySymbol.set(h.symbol, monthlyReturns);
+      }
       const annualReturns = computeAnnualReturns(seriesLong);
       if (annualReturns.length) {
         annualReturnsBySymbol.set(h.symbol, annualReturns);
@@ -598,7 +760,7 @@ document.getElementById('loadChartsBtn').addEventListener('click', async () => {
     }
   }
 
-  window.__chartData = { pastSeries, percentilesBySymbol, annualReturnsBySymbol };
+  window.__chartData = { pastSeries, percentilesBySymbol, annualReturnsBySymbol, monthlyReturnsBySymbol };
 
   if (percentilesBySymbol.size) {
     requestAnimationFrame(() => {

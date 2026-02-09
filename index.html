@@ -79,10 +79,6 @@
           <h3>Allocation</h3>
           <div class="allocation-list" id="allocationList"></div>
         </div>
-        <div class="analysis-block performance-block">
-          <h3>Top & bottom performers</h3>
-          <div class="performance-list" id="performanceList"></div>
-        </div>
         <div class="analysis-block charts-block">
           <h3>Performance & projections</h3>
           <p class="charts-hint">Charts use up to 10 years of history. Scenarios use each ticker’s <strong>annual returns</strong> (90th / median / 10th percentile).</p>
@@ -93,14 +89,14 @@
               <div class="chart-inner"><canvas id="chartPast"></canvas></div>
             </div>
             <div class="chart-container">
-              <h4 class="chart-title">Projected value (6 mo & 1 yr)</h4>
+              <h4 class="chart-title">Projected value (3, 6, 9, 12 months)</h4>
               <div class="chart-inner"><canvas id="chartFuture"></canvas></div>
             </div>
           </div>
         </div>
         <div class="analysis-block distribution-block">
-          <h3>Past annual return by ticker</h3>
-          <p class="distribution-hint">Each ticker’s year-over-year return. Scenarios use the distribution: 90th % (optimistic), median (average), 10th % (pessimistic).</p>
+          <h3>Past monthly return by ticker</h3>
+          <p class="distribution-hint">Histogram of monthly returns over the past 10 years. Scenarios use the annual return distribution: 90th % (optimistic), median (average), 10th % (pessimistic).</p>
           <div class="ticker-distributions" id="tickerDistributions"></div>
         </div>
         <div class="analysis-block trajectory-block">
@@ -113,6 +109,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -528,8 +528,8 @@ section h2 {
 }
 
 .ticker-distributions {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1.25rem;
 }
 
@@ -587,6 +587,15 @@ section h2 {
 .year-bar.negative {
   background: var(--loss);
   opacity: 0.9;
+}
+
+.year-bar.neutral {
+  background: rgba(232, 236, 241, 0.6);
+  opacity: 0.9;
+}
+
+.distribution-plot {
+  height: 220px;
 }
 
 .ticker-distribution-years {
@@ -731,7 +740,17 @@ section h2 {
   font-weight: 500;
 }
 
+.scenario-card .scenario-percent {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-left: 0.35rem;
+}
+
 @media (max-width: 600px) {
+  .ticker-distributions {
+    grid-template-columns: 1fr;
+  }
+
   .trajectory-scenarios {
     grid-template-columns: 1fr;
   }
